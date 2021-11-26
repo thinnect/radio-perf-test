@@ -19,22 +19,33 @@
 #define MAX_PACKET_LEN 100
 #define MAX_PACKET_COUNT 1000
 #define PCKT_SENT_LED 0x04
+#define WAIT_DATA_PCKT_TIMEOUT 100
+#define WAIT_MASTER_PCKT_TIMEOUT 1000
+
+enum role
+{
+    MASTER = 1,
+    SERVANT
+};
 
 // Thread flag definitions
-#define SM_FLG_START_TEST       (1 << 0)
-#define SM_FLG_SEND_SUCCESS     (1 << 1)
-#define SM_FLG_SEND_FAIL        (1 << 2)
-#define SM_FLG_SEND_DONE        (1 << 3)
-//#define SM_FLG_PCKT_RCVD        (1 << 4)
-//#define SM_FLG_FINISH_TEST      (1 << 5)
+#define SM_FLG_START_TEST           (1 << 0)
+#define SM_FLG_SEND_SUCCESS         (1 << 1)
+#define SM_FLG_SEND_FAIL            (1 << 2)
+#define SM_FLG_SEND_DONE_OK         (1 << 3)
+#define SM_FLG_SEND_DONE_NOACK      (1 << 4)
+#define SM_FLG_SEND_DONE_FAIL       (1 << 5)
+#define SM_FLG_PCKT_RCVD            (1 << 6)
+#define SM_FLG_WAIT_PCKT_TIMEOUT    (1 << 7)
 
-#define SM_FLGS_ALL             (0x0000000F)
+#define SM_FLGS_ALL (0x000000FF)
 
 enum sm_states
 {
-    SM_STATE_START,
+    SM_STATE_START = 1,
     SM_STATE_SEND_DATA_PCKT,
     SM_STATE_WAIT_SEND_DONE,
+    SM_STATE_WAIT_DATA_PCKT,
     SM_STATE_FINISH_TEST
 };
 
@@ -54,6 +65,9 @@ static uint32_t m_test_start_time;
 static uint32_t m_test_end_time;
 static bool m_test_started = false;
 static osThreadId_t m_thread_id;
+static uint8_t m_node_role;
+static osTimerId_t m_tmr_wait_pckt;
+
 
 typedef struct data_packet
 {
@@ -66,7 +80,14 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
     platform_mutex_acquire(m_send_mutex);
 
     m_sending = false;
-    osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE);
+
+#if USE_LEDS == 1
+        // blink sent LED for every 100 packets
+        if ((m_sent_pckt_cnt % 100) == 0)
+        {
+            PLATFORM_LedsSet(PLATFORM_LedsGet() ^ PCKT_SENT_LED);
+        }
+#endif
 
     if (COMMS_SUCCESS == result)
     {
@@ -76,14 +97,21 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
         {
             ++m_rcvd_ack_cnt;
         }
+        osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_OK);
     }
     else
     {
-        warn1("!snt:%d", result);
         if (COMMS_ENOACK == result)
         {
             // no ACK but packet was sent
+            warn2("No ACK:%d", result);
             ++m_sent_pckt_cnt;
+            osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_NOACK);
+        }
+        else
+        {
+            err1("Failed to send a packet!");
+            osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_FAIL);
         }
     }
     platform_mutex_release(m_send_mutex);
@@ -124,7 +152,7 @@ static void receive_uc (comms_layer_t* p_comms, const comms_msg_t* p_msg, void* 
     ++m_rcvd_pckt_cnt;
     debug2("RcvUC<-%04X id:%u, cnt:%u", comms_am_get_source(p_comms, p_msg), data_pckt->id, m_rcvd_pckt_cnt);
 
-    // osThreadFlagsSet(m_thread_id, SM_FLG_PCKT_RCVD);
+    osThreadFlagsSet(m_thread_id, SM_FLG_PCKT_RCVD);
 
     if ((false == m_test_started) && (m_node_addr < m_partner_addr))
     {
@@ -208,6 +236,7 @@ static void finish_test (void)
     float packets_rcvd_loss;
     float akcs_rcvd_loss;
     
+    osTimerStop(m_tmr_wait_pckt);
     m_test_end_time = osKernelGetTickCount();
 
 #if USE_LEDS == 1
@@ -241,12 +270,18 @@ static void finish_test (void)
     info1("Packets received loss: %.2f%%", packets_rcvd_loss);
     info1("ACK-s received loss: %.2f%%", akcs_rcvd_loss);
 }
-    
-static void state_machine_1_thread (void* arg)
+
+void tmr_wait_pckt_callback (void* arg)
+{
+    osThreadFlagsSet(m_thread_id, SM_FLG_WAIT_PCKT_TIMEOUT);
+}
+
+static void state_machine_thread (void* arg)
 {
     uint32_t state = SM_STATE_START;
     uint32_t flags;
-
+    osStatus_t status;
+    
     flags = osThreadFlagsClear(SM_FLGS_ALL);
     
     debug1("Thrd starts");
@@ -257,14 +292,8 @@ static void state_machine_1_thread (void* arg)
         flags &= SM_FLGS_ALL;
         
         debug2("st:%X flgs:%X", state, flags);
-#if USE_LEDS == 1
-        // blink sent LED for every 100 packets
-        if ((m_sent_pckt_cnt % 100) == 0)
-        {
-            PLATFORM_LedsSet(PLATFORM_LedsGet() ^ PCKT_SENT_LED);
-        }
-#endif
         
+#if TEST_NR == 1
         switch (state)
         {
             case SM_STATE_START:
@@ -273,7 +302,7 @@ static void state_machine_1_thread (void* arg)
                     state = SM_STATE_SEND_DATA_PCKT;
                     send_data_packet();
                 }
-                if (flags & SM_FLG_SEND_DONE)
+                if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
                 {
                     send_data_packet();
                 }
@@ -288,7 +317,7 @@ static void state_machine_1_thread (void* arg)
                 {
                     send_data_packet();
                 }
-                if (flags & SM_FLG_SEND_DONE)
+                if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
                 {
                     if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
                     {
@@ -302,7 +331,7 @@ static void state_machine_1_thread (void* arg)
             break;
 
             case SM_STATE_WAIT_SEND_DONE:
-                if (flags & SM_FLG_SEND_DONE)
+                if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
                 {
                     if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
                     {
@@ -318,7 +347,192 @@ static void state_machine_1_thread (void* arg)
                 
             default:
                 err1("Unknown state!");
+                while (1);
         }
+#else
+#if TEST_NR == 2
+        if (MASTER == m_node_role)
+        {
+            switch (state)
+            {
+                case SM_STATE_START:
+                    if (flags & SM_FLG_START_TEST)
+                    {
+                        m_test_started = 1;
+                        m_test_start_time = osKernelGetTickCount();
+                        state = SM_STATE_SEND_DATA_PCKT;
+                        send_data_packet();
+                    }
+                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    {
+                        send_data_packet();
+                    }
+                break;
+                
+                case SM_STATE_SEND_DATA_PCKT:
+                    if (flags & SM_FLG_SEND_SUCCESS)
+                    {
+                        state = SM_STATE_WAIT_SEND_DONE;
+                    }
+                    if (flags & SM_FLG_SEND_FAIL)
+                    {
+                        send_data_packet();
+                    }
+                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    {
+                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        {
+                            finish_test();
+                        }
+                        else
+                        {
+                            state = SM_STATE_WAIT_DATA_PCKT;
+                            // start timeout timer
+                            status = osTimerStart(m_tmr_wait_pckt, WAIT_DATA_PCKT_TIMEOUT);
+                            if (osOK != status)
+                            {
+                                err1("!Tmr");
+                                while (1);
+                            }
+                        }
+                    }
+                break;
+
+                case SM_STATE_WAIT_SEND_DONE:
+                    if (flags & SM_FLG_SEND_DONE_OK)
+                    {
+                        state = SM_STATE_WAIT_DATA_PCKT;
+                        // start timeout timer
+                        status = osTimerStart(m_tmr_wait_pckt, WAIT_DATA_PCKT_TIMEOUT);
+                        if (osOK != status)
+                        {
+                            err1("!Tmr");
+                            while (1);
+                        }
+                    }
+                    else if (flags & SM_FLG_SEND_DONE_NOACK)
+                    {
+                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        {
+                            finish_test();
+                        }
+                        else
+                        {
+                            state = SM_STATE_SEND_DATA_PCKT;
+                            send_data_packet();
+                        }
+                    }
+                break;
+
+                case SM_STATE_WAIT_DATA_PCKT:
+                    if ((flags & SM_FLG_WAIT_PCKT_TIMEOUT) || (flags & SM_FLG_PCKT_RCVD))
+                    {
+                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        {
+                            finish_test();
+                        }
+                        else
+                        {
+                            state = SM_STATE_SEND_DATA_PCKT;
+                            send_data_packet();
+                        }
+                    }
+                break;
+            }
+        }
+        else if (SERVANT == m_node_role)
+        {
+            switch (state)
+            {
+                case SM_STATE_START:
+                    if (flags & SM_FLG_START_TEST)
+                    {
+                        m_test_started = 1;
+                        m_test_start_time = osKernelGetTickCount();
+                        state = SM_STATE_SEND_DATA_PCKT;
+                        send_data_packet();
+                    }
+                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    {
+                        send_data_packet();
+                    }
+                break;
+                
+                case SM_STATE_SEND_DATA_PCKT:
+                    if (flags & SM_FLG_SEND_SUCCESS)
+                    {
+                        state = SM_STATE_WAIT_SEND_DONE;
+                    }
+                    if (flags & SM_FLG_SEND_FAIL)
+                    {
+                        send_data_packet();
+                    }
+                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    {
+                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        {
+                            finish_test();
+                        }
+                        else
+                        {
+                            state = SM_STATE_WAIT_DATA_PCKT;
+                            // start timeout timer
+                            status = osTimerStart(m_tmr_wait_pckt, WAIT_MASTER_PCKT_TIMEOUT);
+                            if (osOK != status)
+                            {
+                                err1("!Tmr");
+                                while (1);
+                            }
+                        }
+                    }
+                break;
+
+                case SM_STATE_WAIT_SEND_DONE:
+                    if (flags & SM_FLG_SEND_DONE_OK)
+                    {
+                        state = SM_STATE_WAIT_DATA_PCKT;
+                        // start timeout timer
+                        status = osTimerStart(m_tmr_wait_pckt, WAIT_MASTER_PCKT_TIMEOUT);
+                        if (osOK != status)
+                        {
+                            err1("!Tmr");
+                            while (1);
+                        }
+                    }
+                    else if (flags & SM_FLG_SEND_DONE_NOACK)
+                    {
+                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        {
+                            finish_test();
+                        }
+                        else
+                        {
+                            state = SM_STATE_WAIT_DATA_PCKT;
+                        }
+                    }
+                break;
+
+                case SM_STATE_WAIT_DATA_PCKT:
+                    if (flags & SM_FLG_WAIT_PCKT_TIMEOUT)
+                    {
+                            warn1("Timeout waiting for data packet");
+                            finish_test();
+                            osThreadSuspend(m_thread_id);
+                    }
+                    else if (flags & SM_FLG_PCKT_RCVD)
+                    {
+                        state = SM_STATE_SEND_DATA_PCKT;
+                        send_data_packet();
+                    }
+                break;
+            }
+        }
+
+#else
+        err1("TEST_NR must be 1 or 2");
+        while (1);
+#endif
+#endif
     }
 }
     
@@ -331,6 +545,15 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr, am_addr_t
     m_partner_addr = partner_addr;
     m_pckt_id = 1;
 
+    const osThreadAttr_t sm_thread_attr = { .name = "sm_thrd", .priority = osPriorityLow, .stack_size = 1024 };
+    m_thread_id = osThreadNew(state_machine_thread, NULL, &sm_thread_attr);
+    if (NULL == m_thread_id)
+    {
+        err1("!Thrd");
+        while (1);
+    }
+
+    m_tmr_wait_pckt = osTimerNew(tmr_wait_pckt_callback, osTimerOnce, NULL, NULL);
     m_send_mutex = platform_mutex_new("send");
 
     res = comms_register_recv(m_p_radio, &m_receiver_uc, &receive_uc, NULL, AM_ID_UC_MSG);
@@ -340,34 +563,21 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr, am_addr_t
         while (1);
     }
     
-    const osThreadAttr_t sm_thread_attr = { .name = "sm_thrd", .priority = osPriorityLow, .stack_size = 1024 };
-    m_thread_id = osThreadNew(state_machine_1_thread, NULL, &sm_thread_attr);
-    if (NULL == m_thread_id)
-    {
-        err1("!Thrd");
-        while (1);
-    }
-    osDelay(1000);
-    
     if (m_node_addr > m_partner_addr)
     {
-        debug1("Set start flg");
-        info1("Test starts");
+        info1("Test #%u starts", TEST_NR);
         info1("Sending %u packets, ACK required", MAX_PACKET_COUNT);
 #if USE_LEDS == 1
         PLATFORM_LedsSet(PLATFORM_LedsGet() & ~PCKT_SENT_LED);
 #endif
+        m_node_role = MASTER;
         osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
-        //start_performance_test();
     }
     else
     {
-        debug1("Wait for test start");
-//        while (false == m_test_started)
-//        {
-//            osDelay(100);
-//        }
-//        start_performance_test();
+        m_node_role = SERVANT;
+        m_test_started = 0;
+        info1("Waiting for the master to initiate the test");
     }
 }
 
