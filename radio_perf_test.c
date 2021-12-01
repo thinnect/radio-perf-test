@@ -15,17 +15,20 @@
 #include "platform.h"
 
 #define AM_ID_UC_MSG 0x70
+#define AM_ID_ADDR_MSG 0x71
 #define SEND_RETRY_COUNT 0
 #define MAX_PACKET_LEN 100
 #define MAX_PACKET_COUNT 1000
 #define PCKT_SENT_LED 0x04
 #define WAIT_DATA_PCKT_TIMEOUT 100
 #define WAIT_MASTER_PCKT_TIMEOUT 1000
+#define SEND_ADDR_TIMEOUT 500
 
 enum role
 {
-    MASTER = 1,
-    SERVANT
+    ROLE_MASTER = 1,
+    ROLE_SERVANT,
+    ROLE_UNKNOWN
 };
 
 // Thread flag definitions
@@ -37,12 +40,15 @@ enum role
 #define SM_FLG_SEND_DONE_FAIL       (1 << 5)
 #define SM_FLG_PCKT_RCVD            (1 << 6)
 #define SM_FLG_WAIT_PCKT_TIMEOUT    (1 << 7)
+#define SM_FLG_SEND_ID              (1 << 8)
+#define SM_FLG_ID_RCVD              (1 << 9)
 
-#define SM_FLGS_ALL (0x000000FF)
+#define SM_FLGS_ALL (0x000003FF)
 
 enum sm_states
 {
-    SM_STATE_START = 1,
+    SM_STATE_CHOOSE_ROLE = 1,
+    SM_STATE_START,
     SM_STATE_SEND_DATA_PCKT,
     SM_STATE_WAIT_SEND_DONE,
     SM_STATE_WAIT_DATA_PCKT,
@@ -53,6 +59,7 @@ static platform_mutex_t m_send_mutex;
 static bool m_sending = false;
 static comms_layer_t* m_p_radio;
 static comms_receiver_t m_receiver_uc;
+static comms_receiver_t m_receiver_id;
 
 static comms_msg_t m_msg_to_send;
 static am_addr_t m_node_addr;
@@ -68,13 +75,19 @@ static bool m_test_started = false;
 static osThreadId_t m_thread_id;
 static uint8_t m_node_role;
 static osTimerId_t m_tmr_wait_pckt;
-
+static osTimerId_t m_tmr_send_id;
 
 typedef struct data_packet
 {
 	uint32_t id;
     uint8_t dummy[MAX_PACKET_LEN];
 } __attribute__((packed)) data_packet_t;
+
+typedef struct id_packet
+{
+	am_addr_t node_addr;
+    am_addr_t partner_addr;
+} __attribute__((packed)) id_packet_t;
 
 static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_error_t result, void* p_user)
 {
@@ -90,23 +103,39 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
         }
 #endif
 
-    if (COMMS_SUCCESS == result)
+    if (comms_get_packet_type(m_p_radio, msg) == AM_ID_UC_MSG)
     {
-        debug2("Snt:%u id:%u", result, m_pckt_id - 1);
-        ++m_sent_pckt_cnt;
-        if ((comms_is_ack_required(p_radio, msg) == true) && (comms_ack_received(p_radio, msg) == true))
+        if (COMMS_SUCCESS == result)
         {
-            ++m_rcvd_ack_cnt;
+            debug2("Snt:%u id:%u", result, m_pckt_id - 1);
+            ++m_sent_pckt_cnt;
+            if ((comms_is_ack_required(p_radio, msg) == true) && (comms_ack_received(p_radio, msg) == true))
+            {
+                ++m_rcvd_ack_cnt;
+            }
+            osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_OK);
         }
-        osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_OK);
-    }
-    else
-    {
-        if (COMMS_ENOACK == result)
+        else
         {
-            // no ACK but packet was sent
-            warn2("No ACK:%d", result);
-            osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_NOACK);
+            if (COMMS_ENOACK == result)
+            {
+                // no ACK but packet was sent
+                warn2("No ACK:%d", result);
+                osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_NOACK);
+            }
+            else
+            {
+                err1("Failed to send a packet!");
+                osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_FAIL);
+            }
+        }
+    }
+    else if (comms_get_packet_type(m_p_radio, msg) == AM_ID_ADDR_MSG)
+    {
+        if (COMMS_SUCCESS == result)
+        {
+            debug2("Snt:%u", result);
+            osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_OK);
         }
         else
         {
@@ -114,6 +143,11 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
             osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_FAIL);
         }
     }
+    else
+    {
+        err1("Rcvd UNKNOWN packet!");
+    }
+
     platform_mutex_release(m_send_mutex);
 }
 
@@ -155,11 +189,31 @@ static void receive_uc (comms_layer_t* p_comms, const comms_msg_t* p_msg, void* 
 
     osThreadFlagsSet(m_thread_id, SM_FLG_PCKT_RCVD);
 
-    if ((false == m_test_started) && (m_node_addr < m_partner_addr))
+    if (false == m_test_started)
     {
+        if (0 == m_partner_addr)
+        {
+            m_partner_addr = comms_am_get_source(p_comms, p_msg);
+        }
         m_test_started = true;
         osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
         debug1("Start!");
+    }
+}
+
+static void receive_id (comms_layer_t* p_comms, const comms_msg_t* p_msg, void* user)
+{
+    id_packet_t* id_pckt;
+
+    id_pckt = (id_packet_t*)comms_get_payload(p_comms, p_msg, comms_get_payload_length(p_comms, p_msg));
+    m_partner_addr = id_pckt->node_addr;
+    debug2("RcvID<-%04X id:%04X prt:%04X", comms_am_get_source(p_comms, p_msg), id_pckt->node_addr, id_pckt->partner_addr);
+
+    // signal that my partner has received my ID packet when it's packet contains my address
+    // or when my address is greater
+    if ((id_pckt->partner_addr == m_node_addr) || (m_node_addr > id_pckt->node_addr))
+    {
+        osThreadFlagsSet(m_thread_id, SM_FLG_ID_RCVD);
     }
 }
 
@@ -190,44 +244,33 @@ static void send_data_packet (void)
     platform_mutex_release(m_send_mutex);
 }
 
-#if 0
-static void start_performance_test (void)
+static void send_id_packet (void)
 {
-    float test_duration;
-    float thruput;
-    data_packet_t data_packet;
+    id_packet_t id_packet;
     comms_error_t res;
-    m_pckt_id = 1;
-    
-    m_test_start_time = osKernelGetTickCount();
-    debug1("Test start:%u", m_test_start_time);
-    for (m_pckt_cnt = 0; m_pckt_cnt < MAX_PACKET_COUNT; ++m_pckt_cnt)
+
+    platform_mutex_acquire(m_send_mutex);
+
+    if (true == m_sending)
     {
-        while (m_sending == true);
-        
-        data_packet.id = m_pckt_id++;
-        res = send_packet(m_partner_addr, AM_ID_UC_MSG, &data_packet, sizeof(data_packet));
-        if (COMMS_SUCCESS == res)
-        {
-            platform_mutex_acquire(m_send_mutex);
-            m_sending = true;
-            platform_mutex_release(m_send_mutex);
-        }
+        warn1("busy!");
+        platform_mutex_release(m_send_mutex);
+        return;
     }
-    osDelay(1000);
-    test_duration = (float)(m_test_end_time - m_test_start_time) / (float)1000.0;
-    if (test_duration > 0)
+    id_packet.node_addr = m_node_addr;
+    id_packet.partner_addr = m_partner_addr;
+    res = send_packet(AM_BROADCAST_ADDR, AM_ID_ADDR_MSG, &id_packet, sizeof(id_packet));
+    if (COMMS_SUCCESS == res)
     {
-        thruput = (float)m_sent_pckt_cnt / test_duration;
+        m_sending = true;
+        osThreadFlagsSet(m_thread_id, SM_FLG_SEND_SUCCESS);
     }
     else
     {
-        warn1("Increase MAX_PACKET_COUNT to get results!");
+        osThreadFlagsSet(m_thread_id, SM_FLG_SEND_FAIL);
     }
-    debug1("start:%u end:%u dur:%.2f", m_test_start_time, m_test_end_time, test_duration);
-    info1("Test finished. %u pckts sent in %.2f seconds, thruput:%.2f pckt/s, pckts rcvd:%u", m_sent_pckt_cnt, test_duration, thruput, m_rcvd_pckt_cnt);
+    platform_mutex_release(m_send_mutex);
 }
-#endif
 
 static void finish_test (void)
 {
@@ -261,8 +304,9 @@ static void finish_test (void)
     
     debug1("start:%u end:%u dur:%.2f", m_test_start_time, m_test_end_time, test_duration);
     info1("Test finished");
-    info1("Packets sent: %u", m_sent_pckt_cnt);
-    info1("Send failed: %u", MAX_PACKET_COUNT - m_sent_pckt_cnt);
+    info1("Total packets to send: %u", MAX_PACKET_COUNT);
+    info1("Packets successfully sent: %u", m_sent_pckt_cnt);
+    info1("Send failed (no ACK): %u", MAX_PACKET_COUNT - m_sent_pckt_cnt);
     info1("Test duration: %.2f seconds", test_duration);
     info1("Thruput:%.2f pckt/s", thruput);
     info1("Packets received: %u", m_rcvd_pckt_cnt);
@@ -277,9 +321,14 @@ void tmr_wait_pckt_callback (void* arg)
     osThreadFlagsSet(m_thread_id, SM_FLG_WAIT_PCKT_TIMEOUT);
 }
 
+void tmr_send_id_callback (void* arg)
+{
+    osThreadFlagsSet(m_thread_id, SM_FLG_SEND_ID);
+}
+
 static void state_machine_thread (void* arg)
 {
-    uint32_t state = SM_STATE_START;
+    uint32_t state = SM_STATE_CHOOSE_ROLE;
     uint32_t flags;
     osStatus_t status;
     
@@ -352,7 +401,7 @@ static void state_machine_thread (void* arg)
         }
 #else
 #if TEST_NR == 2
-        if (MASTER == m_node_role)
+        if (ROLE_MASTER == m_node_role)
         {
             switch (state)
             {
@@ -441,7 +490,7 @@ static void state_machine_thread (void* arg)
                 break;
             }
         }
-        else if (SERVANT == m_node_role)
+        else if (ROLE_SERVANT == m_node_role)
         {
             switch (state)
             {
@@ -529,6 +578,54 @@ static void state_machine_thread (void* arg)
                 break;
             }
         }
+        else if (ROLE_UNKNOWN == m_node_role)
+        {
+            switch (state)
+            {
+                case SM_STATE_CHOOSE_ROLE:
+                    if (flags & SM_FLG_SEND_ID)
+                    {
+                        info1("Sending ID");
+                        send_id_packet();
+                    }
+                    if (flags & SM_FLG_ID_RCVD)
+                    {
+                        state = SM_STATE_START;
+                        osTimerStop(m_tmr_send_id);
+
+                        if (m_node_addr > m_partner_addr)
+                        {
+                            m_node_role = ROLE_MASTER;
+                            debug1("Role: master");
+                            osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
+                        }
+                        else
+                        {
+                            m_node_role = ROLE_SERVANT;
+                            debug1("Role: servant");
+                            // do not set start flag here, wait for the master!
+                        }
+                    }
+                    if (flags & SM_FLG_PCKT_RCVD)
+                    {
+                        // gues i have to be in servant mode!
+                        m_node_role = ROLE_SERVANT;
+                        state = SM_STATE_START;
+                        osTimerStop(m_tmr_send_id);
+                        debug1("Role: servant");
+                        osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
+                    }
+                break;
+                
+                default:
+                    err1("Unknown state");
+            }
+        }
+        else
+        {
+            err1("!Role");
+        }
+
 
 #else
         err1("TEST_NR must be 1 or 2");
@@ -538,14 +635,15 @@ static void state_machine_thread (void* arg)
     }
 }
     
-void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr, am_addr_t partner_addr)
+void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
 {
     comms_error_t res;
     
     m_p_radio = p_radio;
     m_node_addr = my_addr;
-    m_partner_addr = partner_addr;
+    m_partner_addr = 0;
     m_pckt_id = 1;
+    m_node_role = ROLE_UNKNOWN;
 
     const osThreadAttr_t sm_thread_attr = { .name = "sm_thrd", .priority = osPriorityLow, .stack_size = 1024 };
     m_thread_id = osThreadNew(state_machine_thread, NULL, &sm_thread_attr);
@@ -556,6 +654,8 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr, am_addr_t
     }
 
     m_tmr_wait_pckt = osTimerNew(tmr_wait_pckt_callback, osTimerOnce, NULL, NULL);
+    m_tmr_send_id = osTimerNew(tmr_send_id_callback, osTimerPeriodic, NULL, NULL);
+    
     m_send_mutex = platform_mutex_new("send");
 
     res = comms_register_recv(m_p_radio, &m_receiver_uc, &receive_uc, NULL, AM_ID_UC_MSG);
@@ -564,7 +664,17 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr, am_addr_t
         err1("!Reg pckt rcv");
         while (1);
     }
+    res = comms_register_recv(m_p_radio, &m_receiver_id, &receive_id, NULL, AM_ID_ADDR_MSG);
+    if (res != COMMS_SUCCESS)
+    {
+        err1("!Reg pckt rcv");
+        while (1);
+    }
     
+    osTimerStart(m_tmr_send_id, SEND_ADDR_TIMEOUT);
+    info1("Searching for partner...");
+    
+#if 0
     if (m_node_addr > m_partner_addr)
     {
         info1("Test #%u starts", TEST_NR);
@@ -572,14 +682,15 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr, am_addr_t
 #if USE_LEDS == 1
         PLATFORM_LedsSet(PLATFORM_LedsGet() & ~PCKT_SENT_LED);
 #endif
-        m_node_role = MASTER;
+        m_node_role = ROLE_MASTER;
         osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
     }
     else
     {
-        m_node_role = SERVANT;
+        m_node_role = ROLE_SERVANT;
         m_test_started = 0;
         info1("Waiting for the master to initiate the test");
     }
+#endif
 }
 
