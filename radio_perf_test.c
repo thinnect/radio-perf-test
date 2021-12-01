@@ -61,6 +61,7 @@ static uint32_t m_sent_pckt_cnt = 0;
 static uint32_t m_rcvd_ack_cnt = 0;
 static uint32_t m_pckt_id;
 static uint32_t m_rcvd_pckt_cnt = 0;
+static uint32_t m_rcvd_pckt_id;
 static uint32_t m_test_start_time;
 static uint32_t m_test_end_time;
 static bool m_test_started = false;
@@ -105,7 +106,6 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
         {
             // no ACK but packet was sent
             warn2("No ACK:%d", result);
-            ++m_sent_pckt_cnt;
             osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_NOACK);
         }
         else
@@ -150,6 +150,7 @@ static void receive_uc (comms_layer_t* p_comms, const comms_msg_t* p_msg, void* 
 
     data_pckt = (data_packet_t*)comms_get_payload(p_comms, p_msg, comms_get_payload_length(p_comms, p_msg));
     ++m_rcvd_pckt_cnt;
+    m_rcvd_pckt_id = data_pckt->id;
     debug2("RcvUC<-%04X id:%u, cnt:%u", comms_am_get_source(p_comms, p_msg), data_pckt->id, m_rcvd_pckt_cnt);
 
     osThreadFlagsSet(m_thread_id, SM_FLG_PCKT_RCVD);
@@ -469,7 +470,8 @@ static void state_machine_thread (void* arg)
                     }
                     if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
                     {
-                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        //if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        if (((MAX_PACKET_COUNT) == m_rcvd_pckt_id) || ((MAX_PACKET_COUNT + 1) == m_pckt_id))
                         {
                             finish_test();
                         }
@@ -501,7 +503,7 @@ static void state_machine_thread (void* arg)
                     }
                     else if (flags & SM_FLG_SEND_DONE_NOACK)
                     {
-                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        if (((MAX_PACKET_COUNT) == m_rcvd_pckt_id) || ((MAX_PACKET_COUNT + 1) == m_pckt_id))
                         {
                             finish_test();
                         }
