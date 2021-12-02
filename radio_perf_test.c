@@ -400,7 +400,7 @@ static void state_machine_thread (void* arg)
                 while (1);
         }
 #else
-#if TEST_NR == 2
+    #if TEST_NR == 2
         if (ROLE_MASTER == m_node_role)
         {
             switch (state)
@@ -629,10 +629,10 @@ static void state_machine_thread (void* arg)
         }
 
 
-#else
+    #else
         err1("TEST_NR must be 1 or 2");
         while (1);
-#endif
+    #endif
 #endif
     }
 }
@@ -677,24 +677,5 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
     
     osTimerStart(m_tmr_send_id, SEND_ADDR_TIMEOUT);
     info1("Searching for partner...");
-    
-#if 0
-    if (m_node_addr > m_partner_addr)
-    {
-        info1("Test #%u starts", TEST_NR);
-        info1("Sending %u packets, ACK required", MAX_PACKET_COUNT);
-#if USE_LEDS == 1
-        PLATFORM_LedsSet(PLATFORM_LedsGet() & ~PCKT_SENT_LED);
-#endif
-        m_node_role = ROLE_MASTER;
-        osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
-    }
-    else
-    {
-        m_node_role = ROLE_SERVANT;
-        m_test_started = 0;
-        info1("Waiting for the master to initiate the test");
-    }
-#endif
 }
 
