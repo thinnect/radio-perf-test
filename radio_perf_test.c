@@ -655,6 +655,8 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
         while (1);
     }
 
+    osDelay(1000);
+    
     m_tmr_wait_pckt = osTimerNew(tmr_wait_pckt_callback, osTimerOnce, NULL, NULL);
     m_tmr_send_id = osTimerNew(tmr_send_id_callback, osTimerPeriodic, NULL, NULL);
     
