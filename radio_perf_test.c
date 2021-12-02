@@ -18,7 +18,7 @@
 #define AM_ID_ADDR_MSG 0x71
 #define SEND_RETRY_COUNT 0
 #define MAX_PACKET_LEN 100
-#define MAX_PACKET_COUNT 1000
+#define MAX_PACKET_COUNT 10000
 #define PCKT_SENT_LED 0x04
 #define WAIT_DATA_PCKT_TIMEOUT 100
 #define WAIT_MASTER_PCKT_TIMEOUT 1000
@@ -411,6 +411,7 @@ static void state_machine_thread (void* arg)
                         m_test_started = 1;
                         m_test_start_time = osKernelGetTickCount();
                         state = SM_STATE_SEND_DATA_PCKT;
+                        info1("Test started");
                         send_data_packet();
                     }
                     if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
@@ -500,6 +501,7 @@ static void state_machine_thread (void* arg)
                         m_test_started = 1;
                         m_test_start_time = osKernelGetTickCount();
                         state = SM_STATE_SEND_DATA_PCKT;
+                        info1("Test started");
                         send_data_packet();
                     }
                     if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
