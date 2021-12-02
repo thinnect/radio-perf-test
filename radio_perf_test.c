@@ -461,7 +461,7 @@ static void state_machine_thread (void* arg)
                             while (1);
                         }
                     }
-                    else if (flags & SM_FLG_SEND_DONE_NOACK)
+                    else if ((flags & SM_FLG_SEND_DONE_NOACK) || (flags & SM_FLG_SEND_DONE_FAIL))
                     {
                         if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
                         {
@@ -552,7 +552,7 @@ static void state_machine_thread (void* arg)
                             while (1);
                         }
                     }
-                    else if (flags & SM_FLG_SEND_DONE_NOACK)
+                    else if ((flags & SM_FLG_SEND_DONE_NOACK) || (flags & SM_FLG_SEND_DONE_FAIL))
                     {
                         if (((MAX_PACKET_COUNT) == m_rcvd_pckt_id) || ((MAX_PACKET_COUNT + 1) == m_pckt_id))
                         {
