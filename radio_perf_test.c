@@ -344,60 +344,106 @@ static void state_machine_thread (void* arg)
         debug2("st:%X flgs:%X", state, flags);
         
 #if TEST_NR == 1
-        switch (state)
+        if (ROLE_UNKNOWN == m_node_role)
         {
-            case SM_STATE_START:
-                if (flags & SM_FLG_START_TEST)
-                {
-                    state = SM_STATE_SEND_DATA_PCKT;
-                    send_data_packet();
-                }
-                if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
-                {
-                    send_data_packet();
-                }
-            break;
+            switch (state)
+            {
+                case SM_STATE_CHOOSE_ROLE:
+                    if (flags & SM_FLG_SEND_ID)
+                    {
+                        info1("Sending ID");
+                        send_id_packet();
+                    }
+                    if (flags & SM_FLG_ID_RCVD)
+                    {
+                        state = SM_STATE_START;
+                        osTimerStop(m_tmr_send_id);
 
-            case SM_STATE_SEND_DATA_PCKT:
-                if (flags & SM_FLG_SEND_SUCCESS)
-                {
-                    state = SM_STATE_WAIT_SEND_DONE;
-                }
-                if (flags & SM_FLG_SEND_FAIL)
-                {
-                    send_data_packet();
-                }
-                if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
-                {
-                    if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
-                    {
-                        finish_test();
+                        if (m_node_addr > m_partner_addr)
+                        {
+                            m_node_role = ROLE_MASTER;
+                            debug1("Role: master");
+                            osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
+                        }
+                        else
+                        {
+                            m_node_role = ROLE_SERVANT;
+                            debug1("Role: servant");
+                            // do not set start flag here, wait for the master!
+                        }
                     }
-                    else
+                    if (flags & SM_FLG_PCKT_RCVD)
                     {
-                        send_data_packet();
+                        // gues i have to be in servant mode!
+                        m_node_role = ROLE_SERVANT;
+                        state = SM_STATE_START;
+                        osTimerStop(m_tmr_send_id);
+                        debug1("Role: servant");
+                        osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
                     }
-                }
-            break;
-
-            case SM_STATE_WAIT_SEND_DONE:
-                if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
-                {
-                    if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
-                    {
-                        finish_test();
-                    }
-                    else
+                break;
+                
+                default:
+                    err1("Unknown state");
+            }
+        }
+        else
+        {
+            switch (state)
+            {
+                case SM_STATE_START:
+                    if (flags & SM_FLG_START_TEST)
                     {
                         state = SM_STATE_SEND_DATA_PCKT;
                         send_data_packet();
                     }
-                }
-            break;
-                
-            default:
-                err1("Unknown state!");
-                while (1);
+                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    {
+                        send_data_packet();
+                    }
+                break;
+
+                case SM_STATE_SEND_DATA_PCKT:
+                    if (flags & SM_FLG_SEND_SUCCESS)
+                    {
+                        state = SM_STATE_WAIT_SEND_DONE;
+                    }
+                    if (flags & SM_FLG_SEND_FAIL)
+                    {
+                        send_data_packet();
+                    }
+                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    {
+                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        {
+                            finish_test();
+                        }
+                        else
+                        {
+                            send_data_packet();
+                        }
+                    }
+                break;
+
+                case SM_STATE_WAIT_SEND_DONE:
+                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    {
+                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        {
+                            finish_test();
+                        }
+                        else
+                        {
+                            state = SM_STATE_SEND_DATA_PCKT;
+                            send_data_packet();
+                        }
+                    }
+                break;
+                    
+                default:
+                    err1("Unknown state!");
+                    while (1);
+            }
         }
 #else
     #if TEST_NR == 2
@@ -678,4 +724,3 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
     osTimerStart(m_tmr_send_id, SEND_ADDR_TIMEOUT);
     info1("Searching for partner...");
 }
-
