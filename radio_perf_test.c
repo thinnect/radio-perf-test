@@ -308,8 +308,6 @@ static void send_id_packet (void)
         osThreadFlagsSet(m_thread_id, SM_FLG_SEND_FAIL);
         return;
     }
-    debug1("rls");
-    platform_mutex_release(m_send_mutex);
 }
 
 static void finish_test (void)
@@ -321,6 +319,8 @@ static void finish_test (void)
     float akcs_rcvd_loss;
     
     osTimerStop(m_tmr_wait_pckt);
+    // DEBUG!!!
+    // osTimerStop(m_tmr_finish_test);
     m_test_end_time = osKernelGetTickCount();
   
 #if USE_LEDS == 1
@@ -358,8 +358,7 @@ static void finish_test (void)
 
 void tmr_wait_pckt_callback (void* arg)
 {
-    info1("st:%u", state);
-    osThreadFlagsSet(m_thread_id, SM_FLG_FINISH_TEST);
+    osThreadFlagsSet(m_thread_id, SM_FLG_WAIT_PCKT_TIMEOUT);
 }
 
 void tmr_send_id_callback (void* arg)
@@ -369,7 +368,9 @@ void tmr_send_id_callback (void* arg)
 
 void tmr_wait_finish_callback (void* arg)
 {
-    osThreadFlagsSet(m_thread_id, SM_FLG_WAIT_PCKT_TIMEOUT);
+    debug1("Finish test!");
+    info1("st:%u", state);
+    osThreadFlagsSet(m_thread_id, SM_FLG_FINISH_TEST);
 }
 
 static void state_machine_thread (void* arg)
@@ -445,6 +446,11 @@ static void state_machine_thread (void* arg)
                 case SM_STATE_START:
                     info1("Test started");
                     status = osTimerStart(m_tmr_finish_test, WAIT_TEST_TIMEOUT);
+                    if (osOK != status)
+                    {
+                        err1("!Tmr");
+                        while (1);
+                    }
                     if (flags & SM_FLG_START_TEST)
                     {
                         state = SM_STATE_SEND_DATA_PCKT;
@@ -467,7 +473,7 @@ static void state_machine_thread (void* arg)
                     }
                     if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
                     {
-                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        if (m_pckt_id >= (MAX_PACKET_COUNT + 1))
                         {
                             state = SM_STATE_FINISH_TEST;
                             finish_test();
@@ -482,7 +488,7 @@ static void state_machine_thread (void* arg)
                 case SM_STATE_WAIT_SEND_DONE:
                     if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK) || (flags & SM_FLG_PCKT_RCVD))
                     {
-                        if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
+                        if (m_pckt_id >= (MAX_PACKET_COUNT + 1))
                         {
                             state = SM_STATE_FINISH_TEST;
                             finish_test();
@@ -776,8 +782,23 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
     osDelay(1000);
     
     m_tmr_wait_pckt = osTimerNew(tmr_wait_pckt_callback, osTimerOnce, NULL, NULL);
+    if (NULL == m_tmr_wait_pckt)
+    {
+        err1("!Tmr");
+        while (1);
+    }
     m_tmr_finish_test = osTimerNew(tmr_wait_finish_callback, osTimerOnce, NULL, NULL);
+    if (NULL == m_tmr_finish_test)
+    {
+        err1("!Tmr");
+        while (1);
+    }
     m_tmr_send_id = osTimerNew(tmr_send_id_callback, osTimerPeriodic, NULL, NULL);
+    if (NULL == m_tmr_send_id)
+    {
+        err1("!Tmr");
+        while (1);
+    }
     
     m_send_mutex = platform_mutex_new("send");
 
@@ -797,4 +818,10 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
     osTimerStart(m_tmr_send_id, SEND_ADDR_TIMEOUT);
     info1("Starting test #%u", TEST_NR);
     info1("Searching for partner...");
+    
+//    // DEBUGGGGG!!!!
+//    m_node_role = ROLE_MASTER;
+//    state = SM_STATE_START;
+//    m_partner_addr = 0x7777;
+//    osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
 }
