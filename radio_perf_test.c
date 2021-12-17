@@ -22,7 +22,7 @@
 #define PCKT_SENT_LED 0x04
 #define WAIT_DATA_PCKT_TIMEOUT 100
 #define WAIT_MASTER_PCKT_TIMEOUT 1000
-#define WAIT_TEST_TIMEOUT 2UL * 60UL * 1000UL
+#define WAIT_TEST_TIMEOUT 5UL * 60UL * 1000UL
 #define SEND_ADDR_TIMEOUT 500
 
 enum role
@@ -80,8 +80,6 @@ static osTimerId_t m_tmr_wait_pckt;
 static osTimerId_t m_tmr_send_id;
 static osTimerId_t m_tmr_finish_test;
 
-static uint32_t state = SM_STATE_CHOOSE_ROLE;
-
 typedef struct data_packet
 {
 	uint32_t id;
@@ -137,7 +135,7 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
             }
             else
             {
-                err1("Failed to send a packet!");
+                err1("Failed to send a packet! err:%d", result);
                 debug1("rls");
                 platform_mutex_release(m_send_mutex);
                 osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_FAIL);
@@ -271,8 +269,6 @@ static void send_data_packet (void)
         osThreadFlagsSet(m_thread_id, SM_FLG_SEND_FAIL);
         return;
     }
-    debug1("rls");
-    platform_mutex_release(m_send_mutex);
 }
 
 static void send_id_packet (void)
@@ -319,8 +315,7 @@ static void finish_test (void)
     float akcs_rcvd_loss;
     
     osTimerStop(m_tmr_wait_pckt);
-    // DEBUG!!!
-    // osTimerStop(m_tmr_finish_test);
+    osTimerStop(m_tmr_finish_test);
     m_test_end_time = osKernelGetTickCount();
   
 #if USE_LEDS == 1
@@ -369,12 +364,12 @@ void tmr_send_id_callback (void* arg)
 void tmr_wait_finish_callback (void* arg)
 {
     debug1("Finish test!");
-    info1("st:%u", state);
     osThreadFlagsSet(m_thread_id, SM_FLG_FINISH_TEST);
 }
 
 static void state_machine_thread (void* arg)
 {
+    uint32_t state = SM_STATE_CHOOSE_ROLE;
     uint32_t flags;
     osStatus_t status;
     
@@ -456,10 +451,13 @@ static void state_machine_thread (void* arg)
                         state = SM_STATE_SEND_DATA_PCKT;
                         send_data_packet();
                     }
-                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    /*
+                    if ((flags & SM_FLG_SEND_DONE_OK) || \
+                        (flags & SM_FLG_SEND_DONE_NOACK) || \
+                        (flags & SM_FLG_SEND_DONE_FAIL))
                     {
                         send_data_packet();
-                    }
+                    }*/
                 break;
 
                 case SM_STATE_SEND_DATA_PCKT:
@@ -471,7 +469,9 @@ static void state_machine_thread (void* arg)
                     {
                         send_data_packet();
                     }
-                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+                    if ((flags & SM_FLG_SEND_DONE_OK) || \
+                        (flags & SM_FLG_SEND_DONE_NOACK) || \
+                        (flags & SM_FLG_SEND_DONE_FAIL))
                     {
                         if (m_pckt_id >= (MAX_PACKET_COUNT + 1))
                         {
@@ -486,7 +486,10 @@ static void state_machine_thread (void* arg)
                 break;
 
                 case SM_STATE_WAIT_SEND_DONE:
-                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK) || (flags & SM_FLG_PCKT_RCVD))
+                    if ((flags & SM_FLG_SEND_DONE_OK) || \
+                        (flags & SM_FLG_SEND_DONE_NOACK) || \
+                        /* (flags & SM_FLG_PCKT_RCVD) || \*/
+                        (flags & SM_FLG_SEND_DONE_FAIL))
                     {
                         if (m_pckt_id >= (MAX_PACKET_COUNT + 1))
                         {
