@@ -118,8 +118,8 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
                 ++m_rcvd_ack_cnt;
             }
             debug1("rls");
-            platform_mutex_release(m_send_mutex);
             osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_OK);
+            platform_mutex_release(m_send_mutex);
             return;
         }
         else
@@ -129,16 +129,16 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
                 // no ACK but packet was sent
                 debug2("No ACK:%d", result);
                 debug1("rls");
-                platform_mutex_release(m_send_mutex);
                 osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_NOACK);
+                platform_mutex_release(m_send_mutex);
                 return;
             }
             else
             {
                 err1("Failed to send a packet! err:%d", result);
                 debug1("rls");
-                platform_mutex_release(m_send_mutex);
                 osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_FAIL);
+                platform_mutex_release(m_send_mutex);
                 return;
             }
         }
@@ -149,16 +149,16 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
         {
             debug2("Snt:%u", result);
             debug1("rls");
-            platform_mutex_release(m_send_mutex);
             osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_OK);
+            platform_mutex_release(m_send_mutex);
             return;
         }
         else
         {
             err1("Failed to send a packet!");
             debug1("rls");
-            platform_mutex_release(m_send_mutex);
             osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_FAIL);
+            platform_mutex_release(m_send_mutex);
             return;
         }
     }
@@ -258,15 +258,15 @@ static void send_data_packet (void)
     {
         m_sending = true;
         debug1("rls");
-        platform_mutex_release(m_send_mutex);
         osThreadFlagsSet(m_thread_id, SM_FLG_SEND_SUCCESS);
+        platform_mutex_release(m_send_mutex);
         return;
     }
     else
     {
         debug1("rls");
-        platform_mutex_release(m_send_mutex);
         osThreadFlagsSet(m_thread_id, SM_FLG_SEND_FAIL);
+        platform_mutex_release(m_send_mutex);
         return;
     }
 }
@@ -293,15 +293,15 @@ static void send_id_packet (void)
     {
         m_sending = true;
         debug1("rls");
-        platform_mutex_release(m_send_mutex);
         osThreadFlagsSet(m_thread_id, SM_FLG_SEND_SUCCESS);
+        platform_mutex_release(m_send_mutex);
         return;
     }
     else
     {
         debug1("rls");
-        platform_mutex_release(m_send_mutex);
         osThreadFlagsSet(m_thread_id, SM_FLG_SEND_FAIL);
+        platform_mutex_release(m_send_mutex);
         return;
     }
 }
