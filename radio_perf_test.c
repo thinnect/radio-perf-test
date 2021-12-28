@@ -14,13 +14,16 @@
 #include "platform_mutex.h"
 #include "platform.h"
 
+#define TEST_VERSION_MAJOR 1
+#define TEST_VERSION_MINOR 3
+
 #define AM_ID_UC_MSG 0x70
 #define AM_ID_ADDR_MSG 0x71
 #define SEND_RETRY_COUNT 0
 #define MAX_PACKET_LEN 100
-#define MAX_PACKET_COUNT 10000
+#define MAX_PACKET_COUNT 1000
 #define PCKT_SENT_LED 0x04
-#define WAIT_DATA_PCKT_TIMEOUT 100
+#define WAIT_DATA_PCKT_TIMEOUT 500
 #define WAIT_MASTER_PCKT_TIMEOUT 1000
 #define WAIT_TEST_TIMEOUT 5UL * 60UL * 1000UL
 #define SEND_ADDR_TIMEOUT 500
@@ -129,6 +132,8 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
                 // no ACK but packet was sent
                 debug2("No ACK:%d", result);
                 debug1("rls");
+                // count all packets sent out!
+                ++m_sent_pckt_cnt;
                 osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_NOACK);
                 platform_mutex_release(m_send_mutex);
                 return;
@@ -306,7 +311,7 @@ static void send_id_packet (void)
     }
 }
 
-static void finish_test (void)
+static void finish_test_2_master (void)
 {
     float test_duration;
     float thruput;
@@ -334,21 +339,64 @@ static void finish_test (void)
         warn1("Increase MAX_PACKET_COUNT to get results!");
     }
     packets_sent_loss = (1.0 - (float)m_sent_pckt_cnt / (float)MAX_PACKET_COUNT) * 100.0;
-    packets_rcvd_loss = (1.0 - (float)m_rcvd_pckt_cnt / (float)MAX_PACKET_COUNT) * 100.0;
-    akcs_rcvd_loss = (1.0 - (float)m_rcvd_ack_cnt / (float)MAX_PACKET_COUNT) * 100.0;
+    packets_rcvd_loss = (1.0 - (float)m_rcvd_pckt_cnt / (float)m_sent_pckt_cnt) * 100.0;
+    akcs_rcvd_loss = (1.0 - (float)m_rcvd_ack_cnt / (float)m_sent_pckt_cnt) * 100.0;
     
     debug1("start:%u end:%u dur:%.2f", m_test_start_time, m_test_end_time, test_duration);
     info1("Test finished");
     info1("Total packets to send: %u", MAX_PACKET_COUNT);
-    info1("Packets successfully sent: %u", m_sent_pckt_cnt);
-    info1("Send failed (no ACK): %u", MAX_PACKET_COUNT - m_sent_pckt_cnt);
-    info1("Test duration: %.2f seconds", test_duration);
-    info1("Thruput:%.2f pckt/s", thruput);
-    info1("Packets received: %u", m_rcvd_pckt_cnt);
+    info1("Packets sent: %u", m_sent_pckt_cnt);
     info1("ACK-s received: %u", m_rcvd_ack_cnt);
+    info1("Packets received: %u", m_rcvd_pckt_cnt);
     info1("Packets sent loss: %.2f%%", packets_sent_loss);
     info1("Packets received loss: %.2f%%", packets_rcvd_loss);
     info1("ACK-s received loss: %.2f%%", akcs_rcvd_loss);
+    info1("Test duration: %.2f seconds", test_duration);
+    info1("Thruput:%.2f pckt/s", thruput);
+}
+
+static void finish_test_2_servant (void)
+{
+    float test_duration;
+    float thruput;
+    float packets_sent_loss;
+    float packets_rcvd_loss;
+    float akcs_rcvd_loss;
+    
+    osTimerStop(m_tmr_wait_pckt);
+    osTimerStop(m_tmr_finish_test);
+    m_test_end_time = osKernelGetTickCount();
+  
+#if USE_LEDS == 1
+    // clear sent LED
+    PLATFORM_LedsSet(PLATFORM_LedsGet() & ~PCKT_SENT_LED);
+#endif
+    
+    debug1("End time:%u", m_test_end_time);
+    test_duration = (float)(m_test_end_time - m_test_start_time) / (float)1000.0;
+    if (test_duration > 0)
+    {
+        thruput = (float)m_sent_pckt_cnt / test_duration;
+    }
+    else
+    {
+        warn1("Increase MAX_PACKET_COUNT to get results!");
+    }
+    packets_sent_loss = (1.0 - (float)m_sent_pckt_cnt / (float)m_rcvd_pckt_cnt) * 100.0;
+    packets_rcvd_loss = (1.0 - (float)m_rcvd_pckt_cnt / (float)MAX_PACKET_COUNT) * 100.0;
+    akcs_rcvd_loss = (1.0 - (float)m_rcvd_ack_cnt / (float)m_sent_pckt_cnt) * 100.0;
+    
+    debug1("start:%u end:%u dur:%.2f", m_test_start_time, m_test_end_time, test_duration);
+    info1("Test finished");
+    info1("Total packets to send: %u", MAX_PACKET_COUNT);
+    info1("Packets sent: %u", m_sent_pckt_cnt);
+    info1("ACK-s received: %u", m_rcvd_ack_cnt);
+    info1("Packets received: %u", m_rcvd_pckt_cnt);
+    info1("Packets sent loss: %.2f%%", packets_sent_loss);
+    info1("Packets received loss: %.2f%%", packets_rcvd_loss);
+    info1("ACK-s received loss: %.2f%%", akcs_rcvd_loss);
+    info1("Test duration: %.2f seconds", test_duration);
+    info1("Thruput:%.2f pckt/s", thruput);
 }
 
 void tmr_wait_pckt_callback (void* arg)
@@ -530,6 +578,7 @@ static void state_machine_thread (void* arg)
                     }
                     if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
                     {
+                        debug4("!");
                         send_data_packet();
                     }
                 break;
@@ -539,7 +588,7 @@ static void state_machine_thread (void* arg)
                     {
                         state = SM_STATE_WAIT_SEND_DONE;
                     }
-                    if (flags & SM_FLG_SEND_FAIL)
+                    if ((flags & SM_FLG_SEND_FAIL) || (flags & SM_FLG_SEND_DONE_FAIL))
                     {
                         send_data_packet();
                     }
@@ -548,7 +597,7 @@ static void state_machine_thread (void* arg)
                         if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
                         {
                             state = SM_STATE_FINISH_TEST;
-                            finish_test();
+                            finish_test_2_master();
                         }
                         else
                         {
@@ -581,7 +630,7 @@ static void state_machine_thread (void* arg)
                         if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
                         {
                             state = SM_STATE_FINISH_TEST;
-                            finish_test();
+                            finish_test_2_master();
                         }
                         else
                         {
@@ -597,11 +646,12 @@ static void state_machine_thread (void* arg)
                         if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
                         {
                             state = SM_STATE_FINISH_TEST;
-                            finish_test();
+                            finish_test_2_master();
                         }
                         else
                         {
                             state = SM_STATE_SEND_DATA_PCKT;
+                            osDelay(3);
                             send_data_packet();
                         }
                     }
@@ -621,16 +671,37 @@ static void state_machine_thread (void* arg)
                     {
                         m_test_started = 1;
                         m_test_start_time = osKernelGetTickCount();
-                        state = SM_STATE_SEND_DATA_PCKT;
+                        state = SM_STATE_WAIT_DATA_PCKT;
+                        status = osTimerStart(m_tmr_wait_pckt, WAIT_MASTER_PCKT_TIMEOUT);
+                        if (osOK != status)
+                        {
+                            err1("!Tmr");
+                            while (1);
+                        }
                         info1("Test started");
-                        send_data_packet();
+                        // TEST - we should not send first!
+                        // send_data_packet();
                     }
-                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+//                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
+//                    {
+//                        send_data_packet();
+//                    }
+                break;
+                
+                case SM_STATE_WAIT_DATA_PCKT:
+                    if (flags & SM_FLG_WAIT_PCKT_TIMEOUT)
                     {
+                            warn1("Timeout waiting for data packet");
+                            finish_test_2_servant();
+                            osThreadSuspend(m_thread_id);
+                    }
+                    else if (flags & SM_FLG_PCKT_RCVD)
+                    {
+                        state = SM_STATE_SEND_DATA_PCKT;
                         send_data_packet();
                     }
                 break;
-                
+
                 case SM_STATE_SEND_DATA_PCKT:
                     if (flags & SM_FLG_SEND_SUCCESS)
                     {
@@ -642,11 +713,10 @@ static void state_machine_thread (void* arg)
                     }
                     if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
                     {
-                        //if ((MAX_PACKET_COUNT + 1) == m_pckt_id)
                         if (((MAX_PACKET_COUNT) == m_rcvd_pckt_id) || ((MAX_PACKET_COUNT + 1) == m_pckt_id))
                         {
                             state = SM_STATE_FINISH_TEST;
-                            finish_test();
+                            finish_test_2_servant();
                         }
                         else
                         {
@@ -679,26 +749,12 @@ static void state_machine_thread (void* arg)
                         if (((MAX_PACKET_COUNT) == m_rcvd_pckt_id) || ((MAX_PACKET_COUNT + 1) == m_pckt_id))
                         {
                             state = SM_STATE_FINISH_TEST;
-                            finish_test();
+                            finish_test_2_servant();
                         }
                         else
                         {
                             state = SM_STATE_WAIT_DATA_PCKT;
                         }
-                    }
-                break;
-
-                case SM_STATE_WAIT_DATA_PCKT:
-                    if (flags & SM_FLG_WAIT_PCKT_TIMEOUT)
-                    {
-                            warn1("Timeout waiting for data packet");
-                            finish_test();
-                            osThreadSuspend(m_thread_id);
-                    }
-                    else if (flags & SM_FLG_PCKT_RCVD)
-                    {
-                        state = SM_STATE_SEND_DATA_PCKT;
-                        send_data_packet();
                     }
                 break;
 
@@ -819,6 +875,7 @@ void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
     }
     
     osTimerStart(m_tmr_send_id, SEND_ADDR_TIMEOUT);
+    info1("Test version %u.%u", TEST_VERSION_MAJOR, TEST_VERSION_MINOR);
     info1("Starting test #%u", TEST_NR);
     info1("Searching for partner...");
     
