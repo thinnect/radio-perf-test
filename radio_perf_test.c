@@ -15,16 +15,16 @@
 #include "platform.h"
 
 #define TEST_VERSION_MAJOR 1
-#define TEST_VERSION_MINOR 3
+#define TEST_VERSION_MINOR 4
 
 #define AM_ID_UC_MSG 0x70
 #define AM_ID_ADDR_MSG 0x71
 #define SEND_RETRY_COUNT 0
 #define MAX_PACKET_LEN 100
-#define MAX_PACKET_COUNT 1000
+#define MAX_PACKET_COUNT 10000
 #define PCKT_SENT_LED 0x04
-#define WAIT_DATA_PCKT_TIMEOUT 500
-#define WAIT_MASTER_PCKT_TIMEOUT 1000
+#define WAIT_DATA_PCKT_TIMEOUT 100
+#define WAIT_MASTER_PCKT_TIMEOUT 3000
 #define WAIT_TEST_TIMEOUT 5UL * 60UL * 1000UL
 #define SEND_ADDR_TIMEOUT 500
 
@@ -388,12 +388,12 @@ static void finish_test_2_servant (void)
     
     debug1("start:%u end:%u dur:%.2f", m_test_start_time, m_test_end_time, test_duration);
     info1("Test finished");
-    info1("Total packets to send: %u", MAX_PACKET_COUNT);
-    info1("Packets sent: %u", m_sent_pckt_cnt);
-    info1("ACK-s received: %u", m_rcvd_ack_cnt);
+    info1("Total packets to receive: %u", MAX_PACKET_COUNT);
     info1("Packets received: %u", m_rcvd_pckt_cnt);
-    info1("Packets sent loss: %.2f%%", packets_sent_loss);
     info1("Packets received loss: %.2f%%", packets_rcvd_loss);
+    info1("Packets sent back: %u", m_sent_pckt_cnt);
+    info1("ACK-s received: %u", m_rcvd_ack_cnt);
+    info1("Packets sent loss: %.2f%%", packets_sent_loss);
     info1("ACK-s received loss: %.2f%%", akcs_rcvd_loss);
     info1("Test duration: %.2f seconds", test_duration);
     info1("Thruput:%.2f pckt/s", thruput);
@@ -451,13 +451,13 @@ static void state_machine_thread (void* arg)
                         if (m_node_addr > m_partner_addr)
                         {
                             m_node_role = ROLE_MASTER;
-                            debug1("Role: master");
+                            info1("Role: master");
                             osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
                         }
                         else
                         {
                             m_node_role = ROLE_SERVANT;
-                            debug1("Role: servant");
+                            info1("Role: servant");
                             // do not set start flag here, wait for the master!
                         }
                     }
@@ -467,7 +467,7 @@ static void state_machine_thread (void* arg)
                         m_node_role = ROLE_SERVANT;
                         state = SM_STATE_START;
                         osTimerStop(m_tmr_send_id);
-                        debug1("Role: servant");
+                        info1("Role: servant");
                         osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
                     }
                 break;
@@ -651,7 +651,6 @@ static void state_machine_thread (void* arg)
                         else
                         {
                             state = SM_STATE_SEND_DATA_PCKT;
-                            osDelay(3);
                             send_data_packet();
                         }
                     }
@@ -679,13 +678,7 @@ static void state_machine_thread (void* arg)
                             while (1);
                         }
                         info1("Test started");
-                        // TEST - we should not send first!
-                        // send_data_packet();
                     }
-//                    if ((flags & SM_FLG_SEND_DONE_OK) || (flags & SM_FLG_SEND_DONE_NOACK))
-//                    {
-//                        send_data_packet();
-//                    }
                 break;
                 
                 case SM_STATE_WAIT_DATA_PCKT:
@@ -698,6 +691,9 @@ static void state_machine_thread (void* arg)
                     else if (flags & SM_FLG_PCKT_RCVD)
                     {
                         state = SM_STATE_SEND_DATA_PCKT;
+                        // we have to wait because radio driver sends ACK right now
+                        // needs fix in radio driver!
+                        osDelay(10);
                         send_data_packet();
                     }
                 break;
@@ -781,13 +777,13 @@ static void state_machine_thread (void* arg)
                         if (m_node_addr > m_partner_addr)
                         {
                             m_node_role = ROLE_MASTER;
-                            debug1("Role: master");
+                            info1("Role: master");
                             osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
                         }
                         else
                         {
                             m_node_role = ROLE_SERVANT;
-                            debug1("Role: servant");
+                            info1("Role: servant");
                             // do not set start flag here, wait for the master!
                         }
                     }
@@ -797,7 +793,7 @@ static void state_machine_thread (void* arg)
                         m_node_role = ROLE_SERVANT;
                         state = SM_STATE_START;
                         osTimerStop(m_tmr_send_id);
-                        debug1("Role: servant");
+                        info1("Role: servant");
                         osThreadFlagsSet(m_thread_id, SM_FLG_START_TEST);
                     }
                 break;
