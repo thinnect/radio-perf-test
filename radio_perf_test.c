@@ -14,6 +14,8 @@
 #include "platform_mutex.h"
 #include "platform.h"
 
+#include "gpio.h"
+
 #define AM_ID_UC_MSG 0x70
 #define AM_ID_ADDR_MSG 0x71
 #define SEND_RETRY_COUNT 0
@@ -102,7 +104,7 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
             PLATFORM_LedsSet(PLATFORM_LedsGet() ^ PCKT_SENT_LED);
         }
 #endif
-
+/*
     if (comms_get_packet_type(m_p_radio, msg) == AM_ID_UC_MSG)
     {
         if (COMMS_SUCCESS == result)
@@ -147,7 +149,7 @@ static void radio_send_done (comms_layer_t* p_radio, comms_msg_t* msg, comms_err
     {
         err1("Rcvd UNKNOWN packet!");
     }
-
+*/
     platform_mutex_release(m_send_mutex);
 }
 
@@ -173,7 +175,7 @@ static comms_error_t send_packet (uint16_t dest, am_id_t am_id, void* p_msg, uin
     comms_set_payload_length(m_p_radio, &m_msg_to_send, msg_size);
 
     err = comms_send(m_p_radio, &m_msg_to_send, &radio_send_done, NULL);
-    debug2("Snd->%04X e:%d", comms_am_get_destination(m_p_radio, &m_msg_to_send), err);
+    debug1("Snd->%04X e:%d", comms_am_get_destination(m_p_radio, &m_msg_to_send), err);
 
     return err;
 }
@@ -231,7 +233,7 @@ static void send_data_packet (void)
         return;
     }
     data_packet.id = m_pckt_id++;
-    res = send_packet(m_partner_addr, AM_ID_UC_MSG, &data_packet, sizeof(data_packet));
+    res = send_packet(0xFFFF, AM_ID_UC_MSG, &data_packet, sizeof(data_packet));
     if (COMMS_SUCCESS == res)
     {
         m_sending = true;
@@ -326,6 +328,24 @@ void tmr_send_id_callback (void* arg)
     osThreadFlagsSet(m_thread_id, SM_FLG_SEND_ID);
 }
 
+void wire_in_callback(GPIO_Pin_e pin,IO_Wakeup_Pol_e type);
+typedef struct gpioin_wakeup_t{
+	GPIO_Pin_e pin;
+	gpioin_Hdl_t posedgeHdl; 
+	gpioin_Hdl_t negedgeHdl;
+}gpioin_wakeup;
+
+gpioin_wakeup tx_wire_in = {GPIO_P07, wire_in_callback, wire_in_callback};
+
+
+void wire_in_callback(GPIO_Pin_e pin,IO_Wakeup_Pol_e type)
+{	
+    if ((type == 1) && (hal_gpio_read(tx_wire_in.pin) == 1))
+    {
+        osThreadFlagsSet(m_thread_id, SM_FLG_SEND_DONE_OK);
+    }
+}
+
 static void state_machine_thread (void* arg)
 {
     uint32_t state = SM_STATE_CHOOSE_ROLE;
@@ -335,14 +355,20 @@ static void state_machine_thread (void* arg)
     flags = osThreadFlagsClear(SM_FLGS_ALL);
     
     debug1("Thrd starts");
-    
+    osDelay(3000);
+    hal_gpio_pin_init(GPIO_P07, GPIO_INPUT);
+    hal_gpioin_register(tx_wire_in.pin, tx_wire_in.posedgeHdl, NULL);
+		
     for (;;)
     {
         flags = osThreadFlagsWait(SM_FLGS_ALL, osFlagsWaitAny, osWaitForever);
         flags &= SM_FLGS_ALL;
         
-        debug2("st:%X flgs:%X", state, flags);
-        
+        if (flags & SM_FLG_SEND_DONE_OK) 
+        {
+            send_data_packet();
+        }
+		}
 #if TEST_NR == 1
         switch (state)
         {
@@ -400,7 +426,7 @@ static void state_machine_thread (void* arg)
                 while (1);
         }
 #else
-    #if TEST_NR == 2
+    #if TEST_NR == 3
         if (ROLE_MASTER == m_node_role)
         {
             switch (state)
@@ -629,12 +655,9 @@ static void state_machine_thread (void* arg)
         }
 
 
-    #else
-        err1("TEST_NR must be 1 or 2");
-        while (1);
     #endif
 #endif
-    }
+    
 }
     
 void init_performance_test (comms_layer_t* p_radio, am_addr_t my_addr)
