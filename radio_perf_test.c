@@ -315,6 +315,50 @@ static void send_id_packet (void)
     }
 }
 
+static void finish_test_1 (void)
+{
+    float test_duration;
+    float thruput;
+    float packets_sent_loss;
+    float packets_rcvd_loss;
+    float akcs_rcvd_loss;
+    
+    osTimerStop(m_tmr_wait_pckt);
+    osTimerStop(m_tmr_finish_test);
+    m_test_end_time = osKernelGetTickCount();
+  
+#if USE_LEDS == 1
+    // clear sent LED
+    PLATFORM_LedsSet(PLATFORM_LedsGet() & ~PCKT_SENT_LED);
+#endif
+    
+    debug1("End time:%u", m_test_end_time);
+    test_duration = (float)(m_test_end_time - m_test_start_time) / (float)1000.0;
+    if (test_duration > 0)
+    {
+        thruput = (float)m_sent_pckt_cnt / test_duration;
+    }
+    else
+    {
+        warn1("Increase MAX_PACKET_COUNT to get results!");
+    }
+    packets_sent_loss = (1.0 - (float)m_sent_pckt_cnt / (float)MAX_PACKET_COUNT) * 100.0;
+    packets_rcvd_loss = (1.0 - (float)m_rcvd_pckt_cnt / (float)MAX_PACKET_COUNT) * 100.0;
+    akcs_rcvd_loss = (1.0 - (float)m_rcvd_ack_cnt / (float)m_sent_pckt_cnt) * 100.0;
+    
+    debug1("start:%u end:%u dur:%.2f", m_test_start_time, m_test_end_time, test_duration);
+    info1("Test finished");
+    info1("Total packets to send: %u", MAX_PACKET_COUNT);
+    info1("Packets sent: %u", m_sent_pckt_cnt);
+    info1("ACK-s received: %u", m_rcvd_ack_cnt);
+    info1("Packets received: %u", m_rcvd_pckt_cnt);
+    info1("Packets sent loss: %.2f%%", packets_sent_loss);
+    info1("Packets received loss: %.2f%%", packets_rcvd_loss);
+    info1("ACK-s received loss: %.2f%%", akcs_rcvd_loss);
+    info1("Test duration: %.2f seconds", test_duration);
+    info1("Thruput:%.2f pckt/s", thruput);
+}
+
 static void finish_test_2_master (void)
 {
     float test_duration;
@@ -556,7 +600,7 @@ static void state_machine_thread (void* arg)
             if (flags & SM_FLG_FINISH_TEST)
             {
                 state = SM_STATE_FINISH_TEST;
-                finish_test();
+                finish_test_1();
             }
                 
             switch (state)
@@ -590,6 +634,7 @@ static void state_machine_thread (void* arg)
                     }
                     if (flags & SM_FLG_SEND_FAIL)
                     {
+                        osDelay(10);
                         send_data_packet();
                     }
                     if ((flags & SM_FLG_SEND_DONE_OK) || \
@@ -599,7 +644,7 @@ static void state_machine_thread (void* arg)
                         if (m_pckt_id >= (MAX_PACKET_COUNT + 1))
                         {
                             state = SM_STATE_FINISH_TEST;
-                            finish_test();
+                            finish_test_1();
                         }
                         else
                         {
@@ -617,7 +662,7 @@ static void state_machine_thread (void* arg)
                         if (m_pckt_id >= (MAX_PACKET_COUNT + 1))
                         {
                             state = SM_STATE_FINISH_TEST;
-                            finish_test();
+                            finish_test_1();
                         }
                         else
                         {
